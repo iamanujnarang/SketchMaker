@@ -4,7 +4,7 @@ import numpy as np
 import io
 import graphviz
 from fpdf import FPDF
-from datetime import datetime
+import math
 
 # ---------------- CONFIG & ASSETS ----------------
 st.set_page_config(page_title="PSPCL Feeder Sketch Maker", page_icon="🔌", layout="wide")
@@ -13,12 +13,10 @@ st.set_page_config(page_title="PSPCL Feeder Sketch Maker", page_icon="🔌", lay
 PSPCL_LOGO_UI = "https://pspcl.in/assets/images/logo.png"
 PSPCL_SKETCH_LOGO = "https://raw.githubusercontent.com/iamanujnarang/SketchMaker/refs/heads/main/PSPCLLogo.png"
 BEECLUE_LOGO = "https://raw.githubusercontent.com/iamanujnarang/LDHF/e5748e037b76a52a47d610a88c3a3c70f72f1c9a/BEECLUE.png"
-SOCIAL_ICONS = {
-    "insta": "https://upload.wikimedia.org/wikipedia/commons/a/a5/Instagram_icon.png",
-    "fb": "https://upload.wikimedia.org/wikipedia/commons/1/1b/Facebook_icon.svg",
-    "x": "https://upload.wikimedia.org/wikipedia/commons/b/b7/X_logo.jpg",
-    "li": "https://upload.wikimedia.org/wikipedia/commons/c/ca/LinkedIn_logo_initials.png"
-}
+INSTA_ICON = "https://upload.wikimedia.org/wikipedia/commons/a/a5/Instagram_icon.png"
+FB_ICON = "https://upload.wikimedia.org/wikipedia/commons/1/1b/Facebook_icon.svg"
+X_ICON = "https://upload.wikimedia.org/wikipedia/commons/b/b7/X_logo.jpg"
+LINKEDIN_ICON = "https://upload.wikimedia.org/wikipedia/commons/c/ca/LinkedIn_logo_initials.png"
 
 VD_FACTORS = {
     "ACSR 100 SQMM": 0.0415, "ACSR 80 SQMM": 0.0512, "ACSR 50 SQMM": 0.0910,
@@ -29,8 +27,13 @@ VD_FACTORS = {
 st.markdown(f"""
 <style>
     .main-header {{ text-align: center; padding: 20px; background: white; border-radius: 15px; }}
-    .footer {{ text-align: center; margin-top: 50px; padding: 30px; border-top: 1px solid #ddd; }}
-    .social-logo {{ width: 35px; margin: 0 10px; }}
+    .footer-container {{ text-align: center; margin-top: 80px; padding: 40px 20px; border-top: 1px solid #ddd; }}
+    .made-with-love {{ font-size: 1.2rem; color: #334155; margin-bottom: 20px; }}
+    .heart-symbol {{ color: #e63946; }}
+    .social-icon {{ width: 35px; margin: 0 10px; transition: 0.3s; }}
+    .social-icon:hover {{ transform: scale(1.2); }}
+    .powered-text {{ color: #94a3b8; font-size: 0.7rem; letter-spacing: 2px; margin-bottom: 10px; text-transform: uppercase; }}
+    .beeclue-img {{ width: 180px; height: auto; }}
 </style>
 """, unsafe_allow_html=True)
 
@@ -47,18 +50,17 @@ with st.sidebar:
     st.success(f"Calculated MDI: {mdi_kva} kVA")
 
 # ---------------- MAIN INPUT TABLES ----------------
-st.subheader("🚠 Main Feeder Backbone (Section A-B-C...)")
+st.subheader("🚠 Main Feeder Backbone (Section A-B, B-C...)")
 n_sec = st.number_input("Number of Main Sections", min_value=1, value=3, step=1)
 
-main_sections = []
-for i in range(int(n_sec)):
-    main_sections.append(f"{chr(65+i)}-{chr(66+i)}")
+main_sections = [f"{chr(65+i)}-{chr(66+i)}" for i in range(int(n_sec))]
 
+# FIXED: Standardized column names to avoid KeyError
 main_df = pd.DataFrame({
     "SECTION": main_sections,
-    "CONDUCTOR": [list(VD_FACTORS.keys())[0]] * len(main_sections),
-    "LENGTH (Mtr)": [500.0] * len(main_sections),
-    "CONNECTED LOAD (kVA)": [1000.0] * len(main_sections)
+    "CONDUCTOR": ["ACSR 80 SQMM"] * len(main_sections),
+    "LENGTH_MTR": [500.0] * len(main_sections),
+    "LOAD_KVA": [100.0] * len(main_sections)
 })
 
 edited_main_df = st.data_editor(main_df, column_config={
@@ -68,85 +70,93 @@ edited_main_df = st.data_editor(main_df, column_config={
 st.divider()
 
 st.subheader("🌿 Sub-Branches / T-Offs (Connects at Nodes)")
-# Mapping Sub-Branches to nodes (B, C, D...)
 branch_nodes = [s.split('-')[1] for s in main_sections]
 branch_df = pd.DataFrame({
-    "CONNECT AT NODE": [branch_nodes[0]] if branch_nodes else [],
-    "BRANCH NAME": ["T-Off 1"],
+    "CONNECT_AT_NODE": [branch_nodes[0]] if branch_nodes else [],
+    "BRANCH_NAME": ["T-Off 1"],
     "CONDUCTOR": ["ACSR 50 SQMM"],
-    "LENGTH (Mtr)": [200.0],
-    "LOAD (kVA)": [200.0]
+    "LENGTH_MTR": [200.0],
+    "LOAD_KVA": [50.0]
 })
 
 edited_branch_df = st.data_editor(branch_df, num_rows="dynamic", column_config={
-    "CONNECT AT NODE": st.column_config.SelectboxColumn(options=branch_nodes),
+    "CONNECT_AT_NODE": st.column_config.SelectboxColumn(options=branch_nodes),
     "CONDUCTOR": st.column_config.SelectboxColumn(options=list(VD_FACTORS.keys()))
 }, use_container_width=True, key="branch_table")
 
-# ---------------- SKETCH GENERATION (GRAPHVIZ) ----------------
+# ---------------- SKETCH GENERATION ----------------
 if st.button("🎨 Generate Sketch & Network Diagram", use_container_width=True):
     dot = graphviz.Digraph(comment=feeder_name)
     dot.attr(rankdir='LR', size='12,8')
     
-    # Source
+    # Source Substation
     dot.node("SS", f"132kV\n{subdivision}\nSubstation", shape="box", style="filled", fillcolor="lightgrey")
     
     # Draw Main Backbone
     last_node = "SS"
     for i, row in edited_main_df.iterrows():
-        nodes = row['SECTION'].split('-')
-        start_node, end_node = nodes[0], nodes[1]
+        start_node, end_node = row['SECTION'].split('-')
         
-        # Draw the node
-        dot.node(end_node, f"Node {end_node}\n{row['CONNECTED_LOAD_kVA']} kVA", shape="circle")
+        # Node with Load
+        dot.node(end_node, f"Node {end_node}\n{row['LOAD_KVA']} kVA", shape="circle")
         
-        # Link main section
+        # Main line
         color = "blue" if "XLPE" in row['CONDUCTOR'] else "black"
-        dot.edge(last_node, end_node, label=f"{row['LENGTH_Mtr']}m\n{row['CONDUCTOR']}", color=color, penwidth="2")
+        dot.edge(last_node, end_node, label=f"{row['LENGTH_MTR']}m\n{row['CONDUCTOR']}", color=color, penwidth="2")
         last_node = end_node
 
     # Draw Sub-Branches
     for i, row in edited_branch_df.iterrows():
-        b_node = f"BR_{i}"
-        dot.node(b_node, f"{row['BRANCH_NAME']}\n{row['LOAD_kVA']} kVA", shape="plaintext")
-        dot.edge(row['CONNECT_AT_NODE'], b_node, label=f"{row['LENGTH_Mtr']}m", style="dashed")
+        branch_id = f"BR_{i}"
+        dot.node(branch_id, f"{row['BRANCH_NAME']}\n{row['LOAD_KVA']} kVA", shape="plaintext")
+        dot.edge(row['CONNECT_AT_NODE'], branch_id, label=f"{row['LENGTH_MTR']}m", style="dashed")
 
     st.graphviz_chart(dot)
 
     # ---------------- PDF EXPORT ----------------
-    # Logic for PDF with specific sketch logo top
     pdf = FPDF()
     pdf.add_page()
     
-    # NEW SKETCH LOGO AT TOP
-    pdf.image(PSPCL_SKETCH_LOGO, x=10, y=8, w=30)
+    # PSPCL Sketch Logo at Top
+    pdf.image(PSPCL_SKETCH_LOGO, x=10, y=8, w=35)
     pdf.set_font("Arial", 'B', 16)
-    pdf.cell(0, 10, f"     {feeder_name.upper()} FEEDER SKETCH", ln=True, align='C')
+    pdf.cell(0, 15, f"{feeder_name.upper()} FEEDER SKETCH", ln=True, align='C')
     pdf.set_font("Arial", size=10)
-    pdf.cell(0, 10, f"     Sub-Division: {subdivision} | MDI: {mdi_kva} kVA", ln=True, align='C')
-    pdf.ln(10)
+    pdf.cell(0, 5, f"Sub-Division: {subdivision} | Calculated MDI: {mdi_kva} kVA", ln=True, align='C')
+    pdf.ln(15)
     
-    pdf.set_font("Arial", 'B', 12)
-    pdf.cell(0, 10, "Technical Parameters & Load Summary", ln=True)
+    # Data Table in PDF
+    pdf.set_font("Arial", 'B', 11)
+    pdf.cell(30, 10, "Section", 1); pdf.cell(60, 10, "Conductor", 1); pdf.cell(40, 10, "Length (m)", 1); pdf.cell(40, 10, "Load (kVA)", 1, ln=True)
     pdf.set_font("Arial", size=10)
-    
-    # Table data in PDF
     for i, row in edited_main_df.iterrows():
-        pdf.cell(0, 8, f"Section {row['SECTION']}: {row['LENGTH_Mtr']}m | {row['CONDUCTOR']} | Load: {row['CONNECTED_LOAD_kVA']}kVA", ln=True)
-    
+        pdf.cell(30, 8, row['SECTION'], 1)
+        pdf.cell(60, 8, row['CONDUCTOR'], 1)
+        pdf.cell(40, 8, str(row['LENGTH_MTR']), 1)
+        pdf.cell(40, 8, str(row['LOAD_KVA']), 1, ln=True)
+
     pdf_bytes = pdf.output(dest='S').encode('latin1')
     st.download_button("📥 Download Official Sketch PDF", pdf_bytes, f"{feeder_name}_Sketch.pdf")
 
 # ---------------- FOOTER ----------------
-st.markdown(f"""
-<div class="footer">
-    <p><b>Er. Anuj Narang (JE PSPCL)</b></p>
-    <a href="https://instagram.com/iamanujnarang"><img src="{SOCIAL_ICONS['insta']}" class="social-logo"></a>
-    <a href="https://facebook.com/iamanujnarang"><img src="{SOCIAL_ICONS['fb']}" class="social-logo"></a>
-    <a href="https://x.com/iamanujnarang"><img src="{SOCIAL_ICONS['x']}" class="social-logo"></a>
-    <a href="https://linkedin.com/in/iamanujnarang"><img src="{SOCIAL_ICONS['li']}" class="social-logo"></a>
-    <br><br>
-    <img src="{BEECLUE_LOGO}" width="140">
-    <p style="font-size:12px; color: grey;">© 2026 PSPCL | Digital Toolbox | Feeder Sketch Maker v2.0</p>
+footer_html = f"""
+<div class="footer-container">
+<div class="made-with-love">Made with <span class="heart-symbol">❤️</span> by <b>Er. Anuj Narang, JE PSPCL</b></div>
+<div style="margin-bottom: 25px;">
+<a href="https://instagram.com/iamanujnarang" target="_blank"><img src="{INSTA_ICON}" class="social-icon"></a>
+<a href="https://facebook.com/iamanujnarang" target="_blank"><img src="{FB_ICON}" class="social-icon"></a>
+<a href="https://x.com/iamanujnarang" target="_blank"><img src="{X_ICON}" class="social-icon"></a>
+<a href="https://linkedin.com/in/iamanujnarang" target="_blank"><img src="{LINKEDIN_ICON}" class="social-icon"></a>
 </div>
-""", unsafe_allow_html=True)
+
+<div style="margin-top: 25px;">
+    <div class="powered-text">In Strategic Collaboration with</div>
+    <a href="https://beeclue.com" target="_blank">
+        <img src="{BEECLUE_LOGO}" class="beeclue-img">
+    </a>
+</div>
+
+<div style="color: #94a3b8; font-size: 0.85rem; margin-top: 25px;">© 2026 | PSPCL Guidelines | CC 45/2024</div>
+</div>
+"""
+st.markdown(footer_html, unsafe_allow_html=True)
