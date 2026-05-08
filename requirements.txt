@@ -3,3 +3,5 @@ pandas
 svgwrite
 Pillow
 graphviz
+fpdf
+numpy
